@@ -3,7 +3,7 @@ package indiware2json
 import "time"
 
 type Meta struct {
-	PlanType     PlanType    `json:"type"`
+	Type         PlanType    `json:"type"`
 	CreatedAt    time.Time   `json:"created_at"`
 	Date         time.Time   `json:"date"`
 	Week         int         `json:"week"`
