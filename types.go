@@ -10,7 +10,7 @@ type Meta struct {
 	DaysPerWeek  int         `json:"days_per_week"`
 	Filename     string      `json:"filename"`
 	Native       int         `json:"native"`
-	SchoolNumber *int        `json:"school_number"` // I don't actually know the data type here
+	SchoolNumber *string     `json:"school_number"` // I don't actually know the data type here
 	FreeDates    []time.Time `json:"free_dates"`
 }
 
@@ -22,9 +22,9 @@ const (
 )
 
 type Period struct {
-	Number int       `json:"period"`
-	Start  time.Time `json:"start"`
-	End    time.Time `json:"end"`
+	Number int    `json:"period"`
+	Start  string `json:"start"`
+	End    string `json:"end"`
 }
 
 type Schedule []Period
@@ -35,7 +35,7 @@ type CourseEntry struct {
 }
 
 type UnitEntry struct {
-	Number  int     `json:"number"`
+	Number  string  `json:"number"`
 	Teacher string  `json:"teacher"`
 	Subject string  `json:"subject"`
 	Group   *string `json:"group"`
@@ -43,13 +43,13 @@ type UnitEntry struct {
 
 type Lesson struct {
 	Period     int           `json:"period"`
-	Start      time.Time     `json:"start"`
-	End        time.Time     `json:"end"`
+	Start      string        `json:"start"`
+	End        string        `json:"end"`
 	Subject    *string       `json:"subject"`
 	Course     *string       `json:"course"`
 	Teacher    *string       `json:"teacher"`
 	Room       *string       `json:"room"`
-	UnitNumber int           `json:"unit_number"`
+	UnitNumber string        `json:"unit_number"`
 	Note       *string       `json:"note"`
 	Changes    LessonChanges `json:"changes"`
 }
@@ -72,11 +72,31 @@ type ClassPlan struct {
 	Teachers []TeacherEntry `json:"teachers"`
 } */
 
+type RoomPlan struct {
+	CreatedAt time.Time   `json:"created_at"`
+	Date      time.Time   `json:"date"`
+	Rooms     []RoomEntry `json:"rooms"`
+}
+
 type ClassEntry struct {
 	Name     string        `json:"name"`
 	Hash     *string       `json:"hash"`
-	Schedule int           `json:"schedule"`
+	Schedule string        `json:"schedule"`
 	Courses  []CourseEntry `json:"courses"`
 	Units    []UnitEntry   `json:"units"`
 	Plan     []Lesson      `json:"plan"`
+}
+
+type RoomEntry struct {
+	Code     string              `json:"code"`
+	Schedule []RoomScheduleEntry `json:"schedule"`
+}
+
+type RoomScheduleEntry struct {
+	Period  int     `json:"period"`
+	Start   string  `json:"start"`
+	End     string  `json:"end"`
+	Class   string  `json:"class"`
+	Subject *string `json:"subject"`
+	Teacher *string `json:"teacher"`
 }
