@@ -33,8 +33,7 @@ func Convert(doc io.Reader) ([]byte, error) {
 
 	switch planType.PlanArt {
 	case "K":
-		var classPlan *ClassPlan
-		classPlan, err = ConvertClasses(bytes.NewReader(data))
+		classPlan, err := ConvertClasses(bytes.NewReader(data))
 		if err != nil {
 			return nil, err
 		}
@@ -44,7 +43,15 @@ func Convert(doc io.Reader) ([]byte, error) {
 			return nil, fmt.Errorf("failed to marshal class plan: %w", err)
 		}
 	case "L":
-		fmt.Println("Teacherplan")
+		teacherPlan, err := ConvertTeachers(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+
+		plan, err = json.Marshal(teacherPlan)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal teacher plan: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("failed to determine plan type, expected K or L in VpMobil > Kopf > planart")
 	}
@@ -64,7 +71,7 @@ func ConvertRoomsJSON(doc io.Reader) ([]byte, error) {
 
 // ConvertClasses converts a class plan document to a *ClassPlan
 func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
-	plan := ClassPlan{}
+	var plan ClassPlan
 
 	decoder := xml.NewDecoder(doc)
 
@@ -102,6 +109,9 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 
 				newClassEntry = ClassEntry{
 					BasePlanEntry: *base,
+					Courses:       []CourseEntry{},
+					Units:         []UnitEntry{},
+					Plan:          []ClassLesson{},
 				}
 
 			case "Kurse":
@@ -156,7 +166,7 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 					return nil, err
 				}
 
-				var classPlan []ClassLesson
+				classPlan := []ClassLesson{}
 				for i := range baseLessons {
 					classLesson := ClassLesson{BaseLesson: baseLessons[i], Teacher: teachers[i].Value}
 					classLesson.Changes.Teacher = teachers[i].Changed
@@ -238,6 +248,140 @@ func (c *ClassPlan) Rooms() *RoomPlan {
 	})
 
 	return &plan
+}
+
+func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
+	var plan TeacherPlan
+
+	var newTeacherEntry TeacherEntry
+	var schedules = make(map[string]Schedule)
+
+	decoder := xml.NewDecoder(doc)
+
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, fmt.Errorf("failed to walk xml document: %w", err)
+		}
+
+		switch t := token.(type) {
+
+		case xml.StartElement:
+			switch t.Name.Local {
+
+			case "Kopf":
+				meta, err := parseMeta(decoder)
+				if err != nil {
+					return nil, err
+				}
+
+				plan.Meta = *meta
+
+			case "Kl":
+				base, err := parseBase(decoder, schedules)
+				if err != nil {
+					return nil, err
+				}
+
+				newTeacherEntry = TeacherEntry{
+					BasePlanEntry: *base,
+					Plan:          []TeacherLesson{},
+					Supervision:   []SupervisionEntry{},
+				}
+
+			case "Pl":
+				baseLessons, classes, err := parsePlan(decoder, t)
+				if err != nil {
+					return nil, err
+				}
+
+				teacherPlan := []TeacherLesson{}
+
+				for i := range baseLessons {
+					newLesson := TeacherLesson{
+						BaseLesson: baseLessons[i],
+						Class:      classes[i].Value,
+					}
+
+					newLesson.Changes.Class = classes[i].Changed
+
+					teacherPlan = append(teacherPlan, newLesson)
+				}
+
+				newTeacherEntry.Plan = teacherPlan
+
+			case "Aufsichten":
+				var supervision struct {
+					Supervisions []struct {
+						Subsitution  string `xml:"AuAe,attr"`
+						Day          int    `xml:"AuTag"`
+						BeforePeriod int    `xml:"AuVorStunde"`
+						Time         string `xml:"AuUhrzeit"`
+						Slot         string `xml:"AuZeit"`
+						Location     string `xml:"AuOrt"`
+						ForTeacher   string `xml:"AuFuer"`
+						Note         string `xml:"AuInfo"`
+					} `xml:"Aufsicht"`
+				}
+
+				err := decoder.DecodeElement(&supervision, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode teacher Aufsichten token: %w", err)
+				}
+
+				for _, s := range supervision.Supervisions {
+					newSupervisionEntry := SupervisionEntry{
+						Day:          time.Weekday(s.Day % 7),
+						BeforePeriod: s.BeforePeriod,
+						Time:         s.Time,
+						Slot:         s.Slot,
+						Location:     s.Location,
+					}
+
+					if s.ForTeacher != "" {
+						newSupervisionEntry.ForTeacher = &s.ForTeacher
+					}
+					if s.Note != "" {
+						newSupervisionEntry.Note = &s.Note
+					}
+
+					switch s.Subsitution {
+					case "AuVertretung":
+						newSupervisionEntry.IsSubstituted = true
+					case "AuAusfall":
+						newSupervisionEntry.IsCancelled = true
+					}
+
+					newTeacherEntry.Supervision = append(newTeacherEntry.Supervision, newSupervisionEntry)
+				}
+			}
+
+		case xml.EndElement:
+			if t.Name.Local == "Kl" {
+				plan.Teachers = append(plan.Teachers, newTeacherEntry)
+			}
+		}
+	}
+
+	plan.Schedules = make(map[string]Schedule)
+	var scheduleMap = make(map[string]string)
+
+	i := 1
+	for n, s := range schedules {
+		plan.Schedules[strconv.Itoa(i)] = s
+		scheduleMap[n] = strconv.Itoa(i)
+		i++
+	}
+
+	for i := range plan.Teachers {
+		plan.Teachers[i].Schedule = scheduleMap[plan.Teachers[i].Schedule]
+	}
+
+	return &plan, nil
 }
 
 func parseBase(decoder *xml.Decoder, schedules map[string]Schedule) (*BasePlanEntry, error) {
@@ -432,7 +576,7 @@ loop:
 				switch planart {
 				case "K":
 					meta.Type = TypeClass
-				case "T":
+				case "L":
 					meta.Type = TypeTeacher
 				default:
 					return nil, fmt.Errorf("Unrecognized plan type token: %s", planart)

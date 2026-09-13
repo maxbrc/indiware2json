@@ -67,7 +67,7 @@ type ClassLesson struct {
 
 type TeacherLesson struct {
 	BaseLesson
-	Class string `json:"class"`
+	Class *string `json:"class"`
 }
 
 type ClassPlan struct {
@@ -78,8 +78,8 @@ type ClassPlan struct {
 
 type TeacherPlan struct {
 	Meta
-	Schedules map[string]Schedule
-	Teachers  []TeacherEntry `json:"teachers"`
+	Schedules map[string]Schedule `json:"schedules"`
+	Teachers  []TeacherEntry      `json:"teachers"`
 }
 
 type RoomPlan struct {
@@ -113,7 +113,8 @@ type SupervisionEntry struct {
 	Time          string       `json:"time"`
 	Slot          string       `json:"slot"`
 	Location      string       `json:"location"`
-	IsSubstituted bool         `json:"is_substituted"`
+	IsSubstituted bool         `json:"substituted"`
+	IsCancelled   bool         `json:"cancelled"`
 	ForTeacher    *string      `json:"for_teacher"`
 	Note          *string      `json:"note"`
 }
