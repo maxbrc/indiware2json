@@ -41,13 +41,12 @@ type UnitEntry struct {
 	Group   *string `json:"group"`
 }
 
-type Lesson struct {
+type BaseLesson struct {
 	Period     int           `json:"period"`
 	Start      string        `json:"start"`
 	End        string        `json:"end"`
 	Subject    *string       `json:"subject"`
 	Course     *string       `json:"course"`
-	Teacher    *string       `json:"teacher"`
 	Room       *string       `json:"room"`
 	UnitNumber string        `json:"unit_number"`
 	Note       *string       `json:"note"`
@@ -57,20 +56,31 @@ type Lesson struct {
 type LessonChanges struct {
 	Subject bool `json:"subject,omitempty"`
 	Teacher bool `json:"teacher,omitempty"`
+	Class   bool `json:"class,omitempty"`
 	Room    bool `json:"room,omitempty"`
+}
+
+type ClassLesson struct {
+	BaseLesson
+	Teacher *string `json:"teacher"`
+}
+
+type TeacherLesson struct {
+	BaseLesson
+	Class string `json:"class"`
 }
 
 type ClassPlan struct {
 	Meta
-	Schedules map[int]Schedule `json:"schedules"`
-	Classes   []ClassEntry     `json:"classes"`
+	Schedules map[string]Schedule `json:"schedules"`
+	Classes   []ClassEntry        `json:"classes"`
 }
 
-/* type TeacherPlan struct {
+type TeacherPlan struct {
 	Meta
-	Schedules map[int]Schedule
-	Teachers []TeacherEntry `json:"teachers"`
-} */
+	Schedules map[string]Schedule
+	Teachers  []TeacherEntry `json:"teachers"`
+}
 
 type RoomPlan struct {
 	CreatedAt time.Time   `json:"created_at"`
@@ -78,13 +88,34 @@ type RoomPlan struct {
 	Rooms     []RoomEntry `json:"rooms"`
 }
 
+type BasePlanEntry struct {
+	Name     string  `json:"name"`
+	Hash     *string `json:"hash"`
+	Schedule string  `json:"schedule"`
+}
+
 type ClassEntry struct {
-	Name     string        `json:"name"`
-	Hash     *string       `json:"hash"`
-	Schedule string        `json:"schedule"`
-	Courses  []CourseEntry `json:"courses"`
-	Units    []UnitEntry   `json:"units"`
-	Plan     []Lesson      `json:"plan"`
+	BasePlanEntry
+	Courses []CourseEntry `json:"courses"`
+	Units   []UnitEntry   `json:"units"`
+	Plan    []ClassLesson `json:"plan"`
+}
+
+type TeacherEntry struct {
+	BasePlanEntry
+	Plan        []TeacherLesson    `json:"plan"`
+	Supervision []SupervisionEntry `json:"supervision"`
+}
+
+type SupervisionEntry struct {
+	Day           time.Weekday `json:"day"`
+	BeforePeriod  int          `json:"before_period"`
+	Time          string       `json:"time"`
+	Slot          string       `json:"slot"`
+	Location      string       `json:"location"`
+	IsSubstituted bool         `json:"is_substituted"`
+	ForTeacher    *string      `json:"for_teacher"`
+	Note          *string      `json:"note"`
 }
 
 type RoomEntry struct {

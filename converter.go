@@ -68,12 +68,6 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 
 	decoder := xml.NewDecoder(doc)
 
-	timeLocation, err := time.LoadLocation("Europe/Berlin")
-	if err != nil {
-		return nil, fmt.Errorf("for some reason loading the time location failed: %w", err)
-	}
-
-	var inClass string
 	var newClassEntry ClassEntry
 	var schedules = make(map[string]Schedule)
 
@@ -92,154 +86,23 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 		case xml.StartElement:
 			switch t.Name.Local {
 
-			case "planart":
-				var planart string
-				err = decoder.DecodeElement(&planart, &t)
+			case "Kopf":
+				meta, err := parseMeta(decoder)
 				if err != nil {
-					return nil, fmt.Errorf("failed to decode planart token: %w", err)
+					return nil, err
 				}
 
-				switch planart {
-				case "K":
-					plan.Type = TypeClass
-				case "T":
-					plan.Type = TypeTeacher
-				default:
-					return nil, fmt.Errorf("Unrecognized plan type token: %s", planart)
-				}
-			case "zeitstempel":
-				var rawCreationTime string
-				err = decoder.DecodeElement(&rawCreationTime, &t)
+				plan.Meta = *meta
+
+			case "Kl":
+				base, err := parseBase(decoder, schedules)
 				if err != nil {
-					return nil, fmt.Errorf("failed to decode zeitstempel token: %w", err)
-				}
-
-				plan.CreatedAt, err = time.ParseInLocation("02.01.2006, 15:04", rawCreationTime, timeLocation)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse zeitstempel creation time: %w", err)
-				}
-
-			case "DatumPlan":
-				var rawDate string
-				err = decoder.DecodeElement(&rawDate, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode DatumPlan token: %w", err)
-				}
-
-				rawDate = dayReplacer.Replace(rawDate)
-				rawDate = monthReplacer.Replace(rawDate)
-
-				plan.Date, err = time.Parse("Monday, 02. January 2006", rawDate)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse DatumPlan date time: %w", err)
-				}
-
-			case "datei":
-				err = decoder.DecodeElement(&plan.Filename, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode datei token: %w", err)
-				}
-
-			case "nativ":
-				err = decoder.DecodeElement(&plan.Native, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode nativ token: %w", err)
-				}
-
-			case "woche":
-				err = decoder.DecodeElement(&plan.Week, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode woche token: %w", err)
-				}
-
-			case "tageprowoche":
-				err = decoder.DecodeElement(&plan.DaysPerWeek, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode tageperwoche token: %w", err)
-				}
-
-			case "schulnummer":
-				var rawSchoolNumber string
-				err = decoder.DecodeElement(&rawSchoolNumber, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode schulnummer token: %w", err)
-				}
-
-				if rawSchoolNumber != "" {
-					plan.SchoolNumber = &rawSchoolNumber
-				}
-
-			case "FreieTage":
-				var ft struct {
-					Days []string `xml:"ft"`
-				}
-
-				err := decoder.DecodeElement(&ft, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode FreieTage token: %w", err)
-				}
-
-				for _, d := range ft.Days {
-					parsed, err := time.ParseInLocation("060102", d, timeLocation)
-					if err != nil {
-						return nil, fmt.Errorf("failed to parse free day %s: %w", d, err)
-					}
-
-					plan.FreeDates = append(plan.FreeDates, parsed)
-				}
-
-			case "Kurz":
-				err := decoder.DecodeElement(&inClass, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to pass class Kurz token: %w", err)
+					return nil, err
 				}
 
 				newClassEntry = ClassEntry{
-					Name: inClass,
+					BasePlanEntry: *base,
 				}
-
-			case "Hash":
-				var hash string
-				err := decoder.DecodeElement(&hash, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode class Hash token: %w", err)
-				}
-
-				if hash != "" {
-					newClassEntry.Hash = &hash
-				}
-
-			case "KlStunden":
-				var rawSchedule struct {
-					Periods []struct {
-						From string `xml:"ZeitVon,attr"`
-						To   string `xml:"ZeitBis,attr"`
-						Num  int    `xml:",chardata"`
-					} `xml:"KlSt"`
-				}
-
-				err := decoder.DecodeElement(&rawSchedule, &t)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode class KlStunden token: %w", err)
-				}
-
-				var newSchedule Schedule
-				var b strings.Builder
-				for _, p := range rawSchedule.Periods {
-					period := Period{
-						Number: p.Num,
-						Start:  p.From,
-						End:    p.To,
-					}
-
-					newSchedule = append(newSchedule, period)
-
-					b.WriteString((p.From + p.To + strconv.Itoa(p.Num)))
-				}
-
-				schedules[b.String()] = newSchedule
-
-				newClassEntry.Schedule = strconv.Itoa(len(schedules))
 
 			case "Kurse":
 				var rawCourses struct {
@@ -288,71 +151,20 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 				}
 
 			case "Pl":
-				var rawLessons struct {
-					Lessons []struct {
-						Period  int    `xml:"St"`
-						Start   string `xml:"Beginn"`
-						End     string `xml:"Ende"`
-						Subject struct {
-							Changed string `xml:"FaAe,attr"`
-							Value   string `xml:",chardata"`
-						} `xml:"Fa"`
-						Teacher struct {
-							Changed string `xml:"LeAe,attr"`
-							Value   string `xml:",chardata"`
-						} `xml:"Le"`
-						Room struct {
-							Changed string `xml:"RaAe,attr"`
-							Value   string `xml:",chardata"`
-						} `xml:"Ra"`
-						Course     string `xml:"Ku2"`
-						UnitNumber string `xml:"Nr"`
-						Note       string `xml:"If"`
-					} `xml:"Std"`
-				}
-
-				err := decoder.DecodeElement(&rawLessons, &t)
+				baseLessons, teachers, err := parsePlan(decoder, t)
 				if err != nil {
-					return nil, fmt.Errorf("failed to decode class Pl token: %w", err)
+					return nil, err
 				}
 
-				for _, l := range rawLessons.Lessons {
-					newLesson := Lesson{
-						Period:     l.Period,
-						Start:      l.Start,
-						End:        l.End,
-						UnitNumber: l.UnitNumber,
-						Changes:    LessonChanges{},
-					}
+				var classPlan []ClassLesson
+				for i := range baseLessons {
+					classLesson := ClassLesson{BaseLesson: baseLessons[i], Teacher: teachers[i].Value}
+					classLesson.Changes.Teacher = teachers[i].Changed
 
-					if l.Subject.Value != "" {
-						newLesson.Subject = &l.Subject.Value
-					}
-					if l.Teacher.Value != "" {
-						newLesson.Teacher = &l.Teacher.Value
-					}
-					if l.Room.Value != "" {
-						newLesson.Room = &l.Room.Value
-					}
-					if l.Note != "" {
-						newLesson.Note = &l.Note
-					}
-					if l.Course != "" {
-						newLesson.Course = &l.Course
-					}
-
-					if l.Subject.Changed == "FaGeaendert" {
-						newLesson.Changes.Subject = true
-					}
-					if l.Teacher.Changed == "LeGeaendert" {
-						newLesson.Changes.Teacher = true
-					}
-					if l.Room.Changed == "RaGeaendert" {
-						newLesson.Changes.Room = true
-					}
-
-					newClassEntry.Plan = append(newClassEntry.Plan, newLesson)
+					classPlan = append(classPlan, classLesson)
 				}
+
+				newClassEntry.Plan = classPlan
 			}
 
 		case xml.EndElement:
@@ -362,12 +174,18 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 		}
 	}
 
-	plan.Schedules = make(map[int]Schedule)
+	plan.Schedules = make(map[string]Schedule)
+	var scheduleMap = make(map[string]string)
 
 	i := 1
-	for _, s := range schedules {
-		plan.Schedules[i] = s
+	for n, s := range schedules {
+		plan.Schedules[strconv.Itoa(i)] = s
+		scheduleMap[n] = strconv.Itoa(i)
 		i++
+	}
+
+	for i := range plan.Classes {
+		plan.Classes[i].Schedule = scheduleMap[plan.Classes[i].Schedule]
 	}
 
 	return &plan, nil
@@ -420,4 +238,290 @@ func (c *ClassPlan) Rooms() *RoomPlan {
 	})
 
 	return &plan
+}
+
+func parseBase(decoder *xml.Decoder, schedules map[string]Schedule) (*BasePlanEntry, error) {
+	var base BasePlanEntry
+
+loop:
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("failed to walk xml document: %w", err)
+		}
+
+		switch t := token.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+
+			case "Kurz":
+				var name string
+				err := decoder.DecodeElement(&name, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to pass class Kurz token: %w", err)
+				}
+
+				base.Name = name
+
+			case "Hash":
+				var hash string
+				err := decoder.DecodeElement(&hash, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode class Hash token: %w", err)
+				}
+
+				if hash != "" {
+					base.Hash = &hash
+				}
+
+			case "KlStunden":
+				var rawSchedule struct {
+					Periods []struct {
+						From string `xml:"ZeitVon,attr"`
+						To   string `xml:"ZeitBis,attr"`
+						Num  int    `xml:",chardata"`
+					} `xml:"KlSt"`
+				}
+
+				err := decoder.DecodeElement(&rawSchedule, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode class KlStunden token: %w", err)
+				}
+
+				var newSchedule Schedule
+				var b strings.Builder
+				for _, p := range rawSchedule.Periods {
+					period := Period{
+						Number: p.Num,
+						Start:  p.From,
+						End:    p.To,
+					}
+
+					newSchedule = append(newSchedule, period)
+
+					b.WriteString((p.From + p.To + strconv.Itoa(p.Num)))
+				}
+
+				schedules[b.String()] = newSchedule
+
+				base.Schedule = b.String()
+
+				break loop
+			}
+		}
+	}
+
+	return &base, nil
+}
+
+func parsePlan(decoder *xml.Decoder, t xml.StartElement) ([]BaseLesson, []struct {
+	Value   *string
+	Changed bool
+}, error) {
+	var rawLessons struct {
+		Lessons []struct {
+			Period  int    `xml:"St"`
+			Start   string `xml:"Beginn"`
+			End     string `xml:"Ende"`
+			Subject struct {
+				Changed string `xml:"FaAe,attr"`
+				Value   string `xml:",chardata"`
+			} `xml:"Fa"`
+			Teacher struct {
+				Changed string `xml:"LeAe,attr"`
+				Value   string `xml:",chardata"`
+			} `xml:"Le"`
+			Room struct {
+				Changed string `xml:"RaAe,attr"`
+				Value   string `xml:",chardata"`
+			} `xml:"Ra"`
+			Course     string `xml:"Ku2"`
+			UnitNumber string `xml:"Nr"`
+			Note       string `xml:"If"`
+		} `xml:"Std"`
+	}
+
+	var baseLessons []BaseLesson
+	var entityValues []struct {
+		Value   *string
+		Changed bool
+	}
+
+	err := decoder.DecodeElement(&rawLessons, &t)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode class Pl token: %w", err)
+	}
+
+	for _, l := range rawLessons.Lessons {
+		newLesson := BaseLesson{
+			Period:     l.Period,
+			Start:      l.Start,
+			End:        l.End,
+			UnitNumber: l.UnitNumber,
+			Changes:    LessonChanges{},
+		}
+
+		var entityValue struct {
+			Value   *string
+			Changed bool
+		}
+
+		if l.Subject.Value != "" {
+			newLesson.Subject = &l.Subject.Value
+		}
+		if l.Teacher.Value != "" {
+			entityValue.Value = &l.Teacher.Value
+		}
+		if l.Room.Value != "" {
+			newLesson.Room = &l.Room.Value
+		}
+		if l.Note != "" {
+			newLesson.Note = &l.Note
+		}
+		if l.Course != "" {
+			newLesson.Course = &l.Course
+		}
+
+		if l.Subject.Changed == "FaGeaendert" {
+			newLesson.Changes.Subject = true
+		}
+		if l.Teacher.Changed == "LeGeaendert" {
+			entityValue.Changed = true
+		}
+		if l.Room.Changed == "RaGeaendert" {
+			newLesson.Changes.Room = true
+		}
+
+		baseLessons = append(baseLessons, newLesson)
+		entityValues = append(entityValues, entityValue)
+	}
+
+	return baseLessons, entityValues, nil
+}
+
+func parseMeta(decoder *xml.Decoder) (*Meta, error) {
+	var meta Meta
+
+	timeLocation, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		return nil, fmt.Errorf("for some reason loading the time location failed: %w", err)
+	}
+
+loop:
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, fmt.Errorf("failed to walk xml document: %w", err)
+		}
+
+		switch t := token.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+
+			case "planart":
+				var planart string
+				err := decoder.DecodeElement(&planart, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode planart token: %w", err)
+				}
+
+				switch planart {
+				case "K":
+					meta.Type = TypeClass
+				case "T":
+					meta.Type = TypeTeacher
+				default:
+					return nil, fmt.Errorf("Unrecognized plan type token: %s", planart)
+				}
+			case "zeitstempel":
+				var rawCreationTime string
+				err := decoder.DecodeElement(&rawCreationTime, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode zeitstempel token: %w", err)
+				}
+
+				meta.CreatedAt, err = time.ParseInLocation("02.01.2006, 15:04", rawCreationTime, timeLocation)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse zeitstempel creation time: %w", err)
+				}
+
+			case "DatumPlan":
+				var rawDate string
+				err = decoder.DecodeElement(&rawDate, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode DatumPlan token: %w", err)
+				}
+
+				rawDate = dayReplacer.Replace(rawDate)
+				rawDate = monthReplacer.Replace(rawDate)
+
+				meta.Date, err = time.ParseInLocation("Monday, 02. January 2006", rawDate, timeLocation)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse DatumPlan date time: %w", err)
+				}
+
+			case "datei":
+				err = decoder.DecodeElement(&meta.Filename, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode datei token: %w", err)
+				}
+
+			case "nativ":
+				err = decoder.DecodeElement(&meta.Native, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode nativ token: %w", err)
+				}
+
+			case "woche":
+				err = decoder.DecodeElement(&meta.Week, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode woche token: %w", err)
+				}
+
+			case "tageprowoche":
+				err = decoder.DecodeElement(&meta.DaysPerWeek, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode tageperwoche token: %w", err)
+				}
+
+			case "schulnummer":
+				var rawSchoolNumber string
+				err = decoder.DecodeElement(&rawSchoolNumber, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode schulnummer token: %w", err)
+				}
+
+				if rawSchoolNumber != "" {
+					meta.SchoolNumber = &rawSchoolNumber
+				}
+
+			case "FreieTage":
+				var ft struct {
+					Days []string `xml:"ft"`
+				}
+
+				err := decoder.DecodeElement(&ft, &t)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode FreieTage token: %w", err)
+				}
+
+				for _, d := range ft.Days {
+					parsed, err := time.ParseInLocation("060102", d, timeLocation)
+					if err != nil {
+						return nil, fmt.Errorf("failed to parse free day %s: %w", d, err)
+					}
+
+					meta.FreeDates = append(meta.FreeDates, parsed)
+				}
+
+				break loop
+			}
+		}
+	}
+
+	return &meta, nil
 }
