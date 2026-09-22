@@ -20,18 +20,14 @@ func Convert(doc io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read doc: %w", err)
 	}
 
-	var planType struct {
-		PlanArt string `xml:"Kopf>planart"`
-	}
-
-	err = xml.Unmarshal(data, &planType)
+	planType, err := getPlanType(data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal xml document: %w", err)
+		return nil, fmt.Errorf("failed to get plan type: %w", err)
 	}
 
 	var plan []byte
 
-	switch planType.PlanArt {
+	switch planType {
 	case "K":
 		classPlan, err := ConvertClasses(bytes.NewReader(data))
 		if err != nil {
@@ -59,6 +55,39 @@ func Convert(doc io.Reader) ([]byte, error) {
 	return plan, nil
 }
 
+func getPlanType(doc []byte) (string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(doc))
+
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return "", fmt.Errorf("failed to walk xml document: %w", err)
+		}
+
+		switch t := token.(type) {
+
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "planart":
+				var planType string
+
+				err := decoder.DecodeElement(&planType, &t)
+				if err != nil {
+					return "", fmt.Errorf("failed to decode planart token: %w", err)
+				}
+
+				return planType, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("reached EOF before planart element was found")
+}
+
 // ConvertRoomsJSON converts a class plan document to a JSON room plan
 func ConvertRoomsJSON(doc io.Reader) ([]byte, error) {
 	classPlan, err := ConvertClasses(doc)
@@ -76,7 +105,7 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 	decoder := xml.NewDecoder(doc)
 
 	var newClassEntry ClassEntry
-	var schedules = make(map[string]Schedule)
+	var schedules = make(map[string]Schedule, 1)
 
 	for {
 		token, err := decoder.Token()
@@ -99,6 +128,10 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 					return nil, err
 				}
 
+				if meta.Type != "class" {
+					return nil, fmt.Errorf("wrong plan type, expected class, got %s", meta.Type)
+				}
+
 				plan.Meta = *meta
 
 			case "Kl":
@@ -109,9 +142,6 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 
 				newClassEntry = ClassEntry{
 					BasePlanEntry: *base,
-					Courses:       []CourseEntry{},
-					Units:         []UnitEntry{},
-					Plan:          []ClassLesson{},
 				}
 
 			case "Kurse":
@@ -127,8 +157,10 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 					return nil, fmt.Errorf("failed to decode class Kurse token: %w", err)
 				}
 
-				for _, c := range rawCourses.Courses {
-					newClassEntry.Courses = append(newClassEntry.Courses, CourseEntry{Name: c.Name, Teacher: c.Teacher})
+				newClassEntry.Courses = make([]CourseEntry, len(rawCourses.Courses))
+
+				for i, c := range rawCourses.Courses {
+					newClassEntry.Courses[i] = CourseEntry{Name: c.Name, Teacher: c.Teacher}
 				}
 
 			case "Unterricht":
@@ -146,7 +178,9 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 					return nil, fmt.Errorf("failed to decode class Unterricht token: %w", err)
 				}
 
-				for _, u := range rawUnits.Units {
+				newClassEntry.Units = make([]UnitEntry, len(rawUnits.Units))
+
+				for i, u := range rawUnits.Units {
 					newUnitEntry := UnitEntry{
 						Number:  u.Number,
 						Teacher: u.Teacher,
@@ -157,7 +191,7 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 						newUnitEntry.Group = &u.Group
 					}
 
-					newClassEntry.Units = append(newClassEntry.Units, newUnitEntry)
+					newClassEntry.Units[i] = newUnitEntry
 				}
 
 			case "Pl":
@@ -166,15 +200,14 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 					return nil, err
 				}
 
-				classPlan := []ClassLesson{}
+				newClassEntry.Plan = make([]ClassLesson, len(baseLessons))
+
 				for i := range baseLessons {
 					classLesson := ClassLesson{BaseLesson: baseLessons[i], Teacher: teachers[i].Value}
 					classLesson.Changes.Teacher = teachers[i].Changed
 
-					classPlan = append(classPlan, classLesson)
+					newClassEntry.Plan[i] = classLesson
 				}
-
-				newClassEntry.Plan = classPlan
 			}
 
 		case xml.EndElement:
@@ -184,8 +217,8 @@ func ConvertClasses(doc io.Reader) (*ClassPlan, error) {
 		}
 	}
 
-	plan.Schedules = make(map[string]Schedule)
-	var scheduleMap = make(map[string]string)
+	plan.Schedules = make(map[string]Schedule, len(schedules))
+	var scheduleMap = make(map[string]string, len(schedules))
 
 	i := 1
 	for n, s := range schedules {
@@ -235,12 +268,17 @@ func (c *ClassPlan) Rooms() *RoomPlan {
 		}
 	}
 
+	plan.Rooms = make([]RoomEntry, len(roomMap))
+
+	i := 0
 	for _, r := range roomMap {
 		sort.Slice(r.Schedule, func(i, j int) bool {
 			return r.Schedule[i].Period < r.Schedule[j].Period
 		})
 
-		plan.Rooms = append(plan.Rooms, *r)
+		plan.Rooms[i] = *r
+
+		i++
 	}
 
 	sort.Slice(plan.Rooms, func(i, j int) bool {
@@ -250,6 +288,7 @@ func (c *ClassPlan) Rooms() *RoomPlan {
 	return &plan
 }
 
+// ConvertTeachers converts a teacher plan document to a *TeacherPlan
 func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 	var plan TeacherPlan
 
@@ -279,6 +318,10 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 					return nil, err
 				}
 
+				if meta.Type != "teacher" {
+					return nil, fmt.Errorf("wrong plan type, expected teacher, got %s", meta.Type)
+				}
+
 				plan.Meta = *meta
 
 			case "Kl":
@@ -289,8 +332,6 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 
 				newTeacherEntry = TeacherEntry{
 					BasePlanEntry: *base,
-					Plan:          []TeacherLesson{},
-					Supervision:   []SupervisionEntry{},
 				}
 
 			case "Pl":
@@ -299,7 +340,7 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 					return nil, err
 				}
 
-				teacherPlan := []TeacherLesson{}
+				newTeacherEntry.Plan = make([]TeacherLesson, len(baseLessons))
 
 				for i := range baseLessons {
 					newLesson := TeacherLesson{
@@ -309,10 +350,8 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 
 					newLesson.Changes.Class = classes[i].Changed
 
-					teacherPlan = append(teacherPlan, newLesson)
+					newTeacherEntry.Plan[i] = newLesson
 				}
-
-				newTeacherEntry.Plan = teacherPlan
 
 			case "Aufsichten":
 				var supervision struct {
@@ -333,7 +372,9 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 					return nil, fmt.Errorf("failed to decode teacher Aufsichten token: %w", err)
 				}
 
-				for _, s := range supervision.Supervisions {
+				newTeacherEntry.Supervision = make([]SupervisionEntry, len(supervision.Supervisions))
+
+				for i, s := range supervision.Supervisions {
 					newSupervisionEntry := SupervisionEntry{
 						Day:          time.Weekday(s.Day % 7),
 						BeforePeriod: s.BeforePeriod,
@@ -356,7 +397,7 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 						newSupervisionEntry.IsCancelled = true
 					}
 
-					newTeacherEntry.Supervision = append(newTeacherEntry.Supervision, newSupervisionEntry)
+					newTeacherEntry.Supervision[i] = newSupervisionEntry
 				}
 			}
 
@@ -367,8 +408,8 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 		}
 	}
 
-	plan.Schedules = make(map[string]Schedule)
-	var scheduleMap = make(map[string]string)
+	plan.Schedules = make(map[string]Schedule, len(schedules))
+	var scheduleMap = make(map[string]string, len(schedules))
 
 	i := 1
 	for n, s := range schedules {
@@ -387,10 +428,13 @@ func ConvertTeachers(doc io.Reader) (*TeacherPlan, error) {
 func parseBase(decoder *xml.Decoder, schedules map[string]Schedule) (*BasePlanEntry, error) {
 	var base BasePlanEntry
 
-loop:
 	for {
 		token, err := decoder.Token()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			return nil, fmt.Errorf("failed to walk xml document: %w", err)
 		}
 
@@ -432,16 +476,16 @@ loop:
 					return nil, fmt.Errorf("failed to decode class KlStunden token: %w", err)
 				}
 
-				var newSchedule Schedule
+				newSchedule := make([]Period, len(rawSchedule.Periods))
 				var b strings.Builder
-				for _, p := range rawSchedule.Periods {
+				for i, p := range rawSchedule.Periods {
 					period := Period{
 						Number: p.Num,
 						Start:  p.From,
 						End:    p.To,
 					}
 
-					newSchedule = append(newSchedule, period)
+					newSchedule[i] = period
 
 					b.WriteString((p.From + p.To + strconv.Itoa(p.Num)))
 				}
@@ -450,12 +494,12 @@ loop:
 
 				base.Schedule = b.String()
 
-				break loop
+				return &base, nil
 			}
 		}
 	}
 
-	return &base, nil
+	return nil, fmt.Errorf("reached EOF before expected elements were found")
 }
 
 func parsePlan(decoder *xml.Decoder, t xml.StartElement) ([]BaseLesson, []struct {
@@ -485,18 +529,18 @@ func parsePlan(decoder *xml.Decoder, t xml.StartElement) ([]BaseLesson, []struct
 		} `xml:"Std"`
 	}
 
-	var baseLessons []BaseLesson
-	var entityValues []struct {
-		Value   *string
-		Changed bool
-	}
-
 	err := decoder.DecodeElement(&rawLessons, &t)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode class Pl token: %w", err)
 	}
 
-	for _, l := range rawLessons.Lessons {
+	baseLessons := make([]BaseLesson, len(rawLessons.Lessons))
+	entityValues := make([]struct {
+		Value   *string
+		Changed bool
+	}, len(rawLessons.Lessons))
+
+	for i, l := range rawLessons.Lessons {
 		newLesson := BaseLesson{
 			Period:     l.Period,
 			Start:      l.Start,
@@ -536,8 +580,8 @@ func parsePlan(decoder *xml.Decoder, t xml.StartElement) ([]BaseLesson, []struct
 			newLesson.Changes.Room = true
 		}
 
-		baseLessons = append(baseLessons, newLesson)
-		entityValues = append(entityValues, entityValue)
+		baseLessons[i] = newLesson
+		entityValues[i] = entityValue
 	}
 
 	return baseLessons, entityValues, nil
@@ -551,7 +595,6 @@ func parseMeta(decoder *xml.Decoder) (*Meta, error) {
 		return nil, fmt.Errorf("for some reason loading the time location failed: %w", err)
 	}
 
-loop:
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -653,19 +696,21 @@ loop:
 					return nil, fmt.Errorf("failed to decode FreieTage token: %w", err)
 				}
 
-				for _, d := range ft.Days {
-					parsed, err := time.ParseInLocation("060102", d, timeLocation)
+				meta.FreeDates = make([]time.Time, len(ft.Days))
+
+				for i, d := range ft.Days {
+					parsedDate, err := time.ParseInLocation("060102", d, timeLocation)
 					if err != nil {
 						return nil, fmt.Errorf("failed to parse free day %s: %w", d, err)
 					}
 
-					meta.FreeDates = append(meta.FreeDates, parsed)
+					meta.FreeDates[i] = parsedDate
 				}
 
-				break loop
+				return &meta, nil
 			}
 		}
 	}
 
-	return &meta, nil
+	return nil, fmt.Errorf("reached EOF before expected elements were found")
 }
